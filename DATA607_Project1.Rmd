@@ -1,0 +1,162 @@
+---
+title: "Project 1"
+author: "Alice Friedman"
+date: "9/23/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stringr)
+library(dplyr)
+library(tidyr)
+```
+# Step 1: Load required libraries and read text file into R
+Code that follows requires libraries stringr, dplyr, and tidyr.
+```{r}
+library(stringr)
+library(dplyr)
+library(tidyr)
+
+raw.data <- read.delim("https://raw.githubusercontent.com/aliceafriedman/DATA607_Proj1/master/tournamentinfo.txt", header = FALSE, sep = "|", dec = ".")
+```
+##Step 2: Read data from each series of rows into its own table
+The data is spread into 2 rows. The following code splits the data into the first row and second row for variables pertaining to each player.
+```{r}
+head(raw.data)
+
+#code checks for the first row by looking for the player's ID, which is an integer
+first_row_test <- str_detect(raw.data$V1, "[[:digit:]]{1,3}")
+#code subsets rows meeting the first_row_test, starting with the first row of player data 
+first_rows <- raw.data[first_row_test,]
+#code checks for the second row by matching a 2 letter code regex to find the rows with state info
+second_row_test <- str_detect(raw.data$V1, "[[:upper:]]{2}")
+#code subsets rows meeting the second_row_test, starting with the first row of player data
+second_rows <- raw.data[second_row_test,]
+
+head(first_rows)
+tail(first_rows)
+head(second_rows)
+tail(second_rows)
+```
+  
+##Step 3: Combine data into single dataframe and add coloumn names.
+Then the data is recombined into a single dataframe.
+
+```{r}
+#extract column names
+colnames1 <- raw.data[2,]
+colnames2 <- raw.data[3,]
+newcolnames <- cbind(colnames1, colnames2)
+
+#This removes extra spaces before and after the names
+newcolnames <- lapply(newcolnames, trimws)
+
+#create dataframe where each player's data in on one row
+df <- cbind(first_rows, second_rows)
+
+#convert column names to character
+#note: this step is important or colnames function wil read the factor indices insted of the text
+newcolnames <- lapply(newcolnames, as.character)
+
+#apply original colnames--now on a single row--to dataframe
+colnames(df) = newcolnames
+
+#view results
+head(df)
+
+#This results in too many columns named "Round!" Need to rename
+new_points_names <- paste0("Round ", colnames(df[,15:21]), " Pair")
+colnames(df)[4:10] = new_points_names
+new_round_names <- paste0("Round ", c(1:7))
+colnames(df)[15:21] = new_round_names
+
+#Drop empty columns
+df <- df[c(1:10,12:21)]
+
+#This produces a dataframe with approximately the original column names
+head(df)
+names(df)
+```
+  
+##Step 4: Calculate opponents average pre-tournament scores.
+```{r}
+#Create a subset of the data frame that contains all the info that can be extracted without a join
+df_sub <- select(df, Pair, "Player Name", Num, Total, "USCF ID / Rtg (Pre->Post)") %>%  
+  rename("PairID"=Pair, "Player Name"="Player Name", "State"=Num, "Total Points"=Total, "ID_Ratings"="USCF ID / Rtg (Pre->Post)") %>%  
+#Extract Pre- ratings from combined ID_Ratings column, based on #StartEnd <- str_locate(df_sub$ID_Ratings, "R:( )+?[[:digit:]]{3,4}"
+  mutate(Pre.Rating = str_sub(ID_Ratings, start=15)) %>%
+  mutate_all(str_trim) %>%
+  mutate(Pre.Rating = as.numeric(str_extract(Pre.Rating,"[[:digit:]]+"))) %>%
+  arrange(Pre.Rating) %>%
+#Drop ID_Ratings
+  select(-ID_Ratings) %>%
+  glimpse()
+```
+
+```{r}
+#Reshape data into long format using tidyr
+#Create new long-format table with pair information
+df_pairs <- df %>% select(ends_with("Pair")) %>%
+  gather(key = "Round", value = "PairID", -Pair, na.rm = FALSE, convert = FALSE, factor_key = TRUE) %>%
+  arrange(Pair) %>%
+  mutate(PairID = str_extract(PairID, "[[:digit:]]+")) %>%
+  glimpse()
+
+#Join with df_sub to get the Player.2's ratings
+df_player2_avg_rating <- inner_join(df_pairs, df_sub) %>%
+#Group by pair
+  group_by(Pair) 
+
+#Summarize to  obtain mean rating of opponents
+Player.2.Mean <-  df_player2_avg_rating %>% summarize("Average Opponent Rating" = as.integer(mean(Pre.Rating))) %>%
+  mutate (PairID = as.character(Pair)) %>%
+  mutate_all(str_trim) %>%
+  mutate_all(unlist) %>%
+  glimpse()
+```
+   
+##Final Step: Rejoin to dataframe for final answer, and write to CSV!
+```{r}
+#Rejoin to df_sub for final answer!
+Chess <- inner_join(df_sub, Player.2.Mean) %>%
+  select(-Pair) %>%
+  arrange(PairID) %>%
+  mutate(`Total Points`=as.numeric(`Total Points`), 
+         Pre.Rating = as.numeric(Pre.Rating),
+         `Average Opponent Rating`=as.numeric(`Average Opponent Rating`)) %>%
+  glimpse() 
+
+head(Chess)
+
+#Note file will write to location set up in your RStudio preferences.
+write.csv(Chess, file="ChessScores.csv")
+```
+  
+##Data Visualization
+Requires ggplot2
+```{r}
+library(ggplot2)
+
+#What is the relationship between Total Points (e.g. how the player did at this tournament) and Pre-Tournament Rating?
+Chess %>% 
+  ggplot(aes(x=Pre.Rating, y=`Total Points`))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  labs(title="Pre-Tournament Ratings vs. Tournament Total Points",
+       x="Pre-Tournament Ratings",
+       y="Tournament Total Points")
+
+
+#What is the relationship between Total Points (e.g. how the player did at this tournament) and Average Opponent Pre-Tournament Rating?
+Chess %>% 
+  ggplot(aes(x=`Average Opponent Rating`, y=`Total Points`))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  labs(title="Mean Opponent Ratings vs. Tournament Total Points",
+       x="Mean Oppoenent Pre-Tournament Ratings",
+       y="Tournament Total Points")
+```
+  
+Not surpringly, better-rated players did better at this tournament. Somewhat surprisingly, players paired with better-rated opponents *also* did better at this tournament! This can likely be explained that as players advanced, they were more likely to be paired with their better-rated peers, who had also won the last round.
+
